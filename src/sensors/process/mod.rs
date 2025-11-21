@@ -2,6 +2,18 @@ use crate::sensors::SensorConfig;
 
 use serde::Serialize;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::{
+    Foundation::CloseHandle,
+    System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    },
+    System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+    System::ProcessStatus::K32GetModuleFileNameExW,
+};
+
+
 #[derive(Debug, Serialize)]
 pub struct ConnectionInfo {
     pub proto: String,
@@ -55,15 +67,7 @@ pub fn run_process_sensor(_config: &SensorConfig)
 }
 
 
-#[cfg(target_os = "windows")]
-use windows::Win32::{
 
-    Foundation::CloseHandle,
-    System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
-        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-    },
-};
 
 #[cfg(target_os= "windows")]
 pub fn collect_process_info() -> Vec<ProcessInfo>
@@ -133,9 +137,9 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 pid, ppid, thread_count, exe_name
             );
 
-                // For now  use exe_name as exe_path placeholder.
-            //later: replace with full path via OpenProcess + QueryFullProcessImageNameW.
-            let exe_path = exe_name.clone();
+            //get path of exe
+            let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
+
 
             results.push(ProcessInfo {
                 pid,
@@ -177,4 +181,48 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
     println!("Number of processes running on this computer: {}", count);
 
     results
+}
+
+
+
+
+
+
+///HELPERS FOR ACQUIRING PROCESS DETAILS
+
+
+
+
+#[cfg(target_os = "windows")]
+fn get_process_path(pid: u32) -> Option<String> {
+    unsafe {
+        // Combine the access rights we need
+        let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+
+        // Try to open the process
+        let h_process = match OpenProcess(access, false, pid) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("OpenProcess({pid}) failed: {e:?}");
+                return None;
+            }
+        };
+
+        // UTF-16 buffer for the path
+        let mut buffer = [0u16; 1024];
+
+        // Ask Windows for the main module's file name
+        let len = K32GetModuleFileNameExW(Some(h_process), None, &mut buffer) as usize;
+
+        if len == 0 {
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        let path = String::from_utf16_lossy(&buffer[..len]);
+
+        let _ = CloseHandle(h_process);
+
+        Some(path)
+    }
 }
