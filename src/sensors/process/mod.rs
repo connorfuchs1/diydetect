@@ -1,16 +1,35 @@
 use crate::sensors::SensorConfig;
 
+
+use std::ffi::{OsStr};
 use serde::Serialize;
+
+
+#[cfg(target_os = "windows")]
+use std::{mem::size_of, os::windows::ffi::OsStrExt};
+
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::CloseHandle,
+    Foundation::{CloseHandle, HWND, HANDLE},
     System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
         PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     },
     System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
     System::ProcessStatus::K32GetModuleFileNameExW,
+    Security::WinTrust::{
+        WinVerifyTrust,
+        WINTRUST_ACTION_GENERIC_VERIFY_V2,
+        WINTRUST_DATA,
+        WINTRUST_DATA_0,
+        WINTRUST_FILE_INFO,
+        WTD_CHOICE_FILE,
+        WTD_UI_NONE,
+        WTD_REVOKE_NONE,
+    },
 };
 
 
@@ -139,7 +158,8 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 
             //get path of exe
             let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
-
+            
+            let is_signed = Some(get_is_signed(pid));
 
             results.push(ProcessInfo {
                 pid,
@@ -149,7 +169,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 user: None,                  // TODO
                 domain: None,                // TODO
                 integrity_level: None,       // TODO
-                is_signed: None,             // TODO
+                is_signed,             
                 signer_name: None,           // TODO
                 sha256: None,                // TODO
                 cpu_percent: None,           // TODO
@@ -222,7 +242,57 @@ fn get_process_path(pid: u32) -> Option<String> {
         let path = String::from_utf16_lossy(&buffer[..len]);
 
         let _ = CloseHandle(h_process);
-
+ 
         Some(path)
+    }
+}
+
+
+
+
+#[cfg(target_os = "windows")]
+fn get_is_signed(pid: u32) -> bool {
+    // 1) Resolve the executable path for this PID
+    let path = match get_process_path(pid) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // 2) Convert Rust &str -> null-terminated UTF-16 for Win32
+    let wide: Vec<u16> = OsStr::new(&path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        // 3) Describe the file we want to verify
+        let mut file_info = WINTRUST_FILE_INFO {
+            cbStruct: size_of::<WINTRUST_FILE_INFO>() as u32,
+            pcwszFilePath: PCWSTR(wide.as_ptr()),
+            hFile: HANDLE(std::ptr::null_mut()),                    // let WinTrust open it
+            pgKnownSubject: std::ptr::null_mut(),
+        };
+
+        // 4) Configure WinTrust: "verify this file, no UI"
+        let mut data = WINTRUST_DATA {
+            cbStruct: size_of::<WINTRUST_DATA>() as u32,
+            dwUnionChoice: WTD_CHOICE_FILE,
+            dwUIChoice: WTD_UI_NONE,
+            fdwRevocationChecks: WTD_REVOKE_NONE,
+            Anonymous: WINTRUST_DATA_0 { pFile: &mut file_info },
+            ..Default::default()
+        };
+
+        // 5) Policy GUID: generic code-signing verify v2
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+
+        // 6) Call WinVerifyTrust. 0 == ERROR_SUCCESS == "signed & trusted"
+        let status = WinVerifyTrust(
+            HWND(std::ptr::null_mut()),
+            &mut action,
+            &mut data as *mut _ as *mut _,
+        );
+
+        status == 0
     }
 }
