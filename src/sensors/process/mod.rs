@@ -30,6 +30,17 @@ use windows::Win32::{
         WTD_UI_NONE,
         WTD_REVOKE_NONE,
     },
+    Security::Cryptography::{
+        CryptQueryObject,
+        CertEnumCertificatesInStore,
+        CertCloseStore,
+        CertGetNameStringW,
+        HCERTSTORE,
+        CERT_QUERY_OBJECT_FILE,
+        CERT_QUERY_CONTENT_FLAG_ALL,
+        CERT_QUERY_FORMAT_FLAG_BINARY,
+        CERT_NAME_SIMPLE_DISPLAY_TYPE,
+    }
 };
 
 
@@ -157,9 +168,16 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
             );
 
             //get path of exe
+
+
+
+
             let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
-            
             let is_signed = Some(get_is_signed(pid));
+            let signer_name = get_signer_name(pid);
+
+
+
 
             results.push(ProcessInfo {
                 pid,
@@ -170,7 +188,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 domain: None,                // TODO
                 integrity_level: None,       // TODO
                 is_signed,             
-                signer_name: None,           // TODO
+                signer_name,           // TODO
                 sha256: None,                // TODO
                 cpu_percent: None,           // TODO
                 working_set_mb: None,        // TODO
@@ -296,3 +314,81 @@ fn get_is_signed(pid: u32) -> bool {
         status == 0
     }
 }
+
+
+#[cfg(target_os = "windows")]
+fn get_signer_name(pid: u32) -> Option<String> {
+    //exe path
+    let path = get_process_path(pid)?;
+
+    // 2) Make a null-terminated UTF-16 string for CryptoAPI
+    let wide: Vec<u16> = OsStr::new(&path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        //use CryptoAPI to parse the file and give us a cert store
+
+        use std::ffi::c_void;
+        let mut cert_store: HCERTSTORE = HCERTSTORE::default();
+
+        let res = CryptQueryObject(
+            CERT_QUERY_OBJECT_FILE,
+            // pvObject: wide string pointer as *const c_void
+            wide.as_ptr() as *const c_void,
+            CERT_QUERY_CONTENT_FLAG_ALL,
+            CERT_QUERY_FORMAT_FLAG_BINARY,
+            0,
+            None,              // pdwMsgAndCertEncodingType
+            None,              // pdwContentType
+            None,              // pdwFormatType
+            Some(&mut cert_store),
+            None,              // phMsg
+            None,              // ppvContext
+        );
+
+        if let Err(e) = res {
+            eprintln!("CryptQueryObject({}) failed: {:?}", path, e);
+            if !cert_store.is_invalid() {
+                let _ = CertCloseStore(Some(cert_store), 0);
+            }
+            return None;
+        }
+
+        if cert_store.is_invalid() {
+            return None;
+        }
+
+        //take the first certificate from the store
+        let cert_context = CertEnumCertificatesInStore(cert_store, None);
+        if cert_context.is_null() {
+            let _ = CertCloseStore(Some(cert_store), 0);
+            return None;
+        }
+
+        //ask for the \"simple display\" subject name
+        let mut name_buf = [0u16; 256];
+
+        let len = CertGetNameStringW(
+            cert_context,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            0,          // dwFlags
+            None,       // pvTypePara
+            Some(&mut name_buf),
+        );
+
+        if len <= 1 {
+            let _ = CertCloseStore(Some(cert_store), 0);
+            return None;
+        }
+
+        let name = String::from_utf16_lossy(&name_buf[..(len - 1) as usize]);
+
+        let _ = CertCloseStore(Some(cert_store), 0);
+
+        Some(name)
+    }
+}
+
+
