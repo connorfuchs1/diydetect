@@ -1,7 +1,10 @@
 use crate::sensors::SensorConfig;
 
+use std::ptr::null_mut;
+use std::net::Ipv4Addr;
+use std::ffi::{OsStr, c_void};
 
-use std::ffi::{OsStr};
+
 use serde::Serialize;
 
 
@@ -20,6 +23,14 @@ use windows::Win32::{
     },
     System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
     System::ProcessStatus::K32GetModuleFileNameExW,
+    
+    NetworkManagement::IpHelper::{
+        GetExtendedTcpTable,
+        MIB_TCPTABLE_OWNER_PID,
+        MIB_TCPROW_OWNER_PID,
+        TCP_TABLE_CLASS,
+    },
+
     Security::WinTrust::{
         WinVerifyTrust,
         WINTRUST_ACTION_GENERIC_VERIFY_V2,
@@ -175,7 +186,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
             let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
             let is_signed = Some(get_is_signed(pid));
             let signer_name = get_signer_name(pid);
-
+            let connections = get_connections(pid);
 
 
 
@@ -194,7 +205,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 working_set_mb: None,        // TODO
                 thread_count,
                 modules: Vec::new(),         // TODO
-                connections: Vec::new(),     // TODO
+                connections,     // TODO
                 derived_flags: DerivedFlags::default(),
             });
 
@@ -392,3 +403,93 @@ fn get_signer_name(pid: u32) -> Option<String> {
 }
 
 
+#[cfg(target_os = "windows")]
+fn tcp_state_to_string(state: u32) -> &'static str {
+    match state {
+        1 => "CLOSED",
+        2 => "LISTEN",
+        3 => "SYN_SENT",
+        4 => "SYN_RECEIVED",
+        5 => "ESTABLISHED",
+        6 => "FIN_WAIT1",
+        7 => "FIN_WAIT2",
+        8 => "CLOSE_WAIT",
+        9 => "CLOSING",
+        10 => "LAST_ACK",
+        11 => "TIME_WAIT",
+        12 => "DELETE_TCB",
+        _ => "UNKNOWN",
+    }
+}
+#[cfg(target_os = "windows")]
+fn get_connections(pid: u32) -> Vec<ConnectionInfo> {
+    let mut results = Vec::new();
+
+    unsafe {
+
+        let mut size: u32 = 0;
+
+        // First call to get required buffer size
+        let _ = GetExtendedTcpTable(
+            Some(null_mut()),
+            &mut size,
+            false.into(),                   // don't need sorted
+            2,                               // AF_INET = 2
+            TCP_TABLE_CLASS(5),              // 5 == TCP_TABLE_OWNER_PID_ALL
+            0,
+        );
+
+        if size == 0 {
+            return results;
+        }
+
+        let mut buf: Vec<u8> = vec![0; size as usize];
+
+        let ret = GetExtendedTcpTable(
+            Some(buf.as_mut_ptr() as *mut c_void),
+            &mut size,
+            false.into(),
+            2,                               // AF_INET
+            TCP_TABLE_CLASS(5),              // OWNER_PID_ALL
+            0,
+        );
+
+        if ret != 0 {
+            // non-zero means some error (we can refine this later)
+            return results;
+        }
+
+        // Interpret the buffer as MIB_TCPTABLE_OWNER_PID
+        let table_ptr = buf.as_mut_ptr() as *mut MIB_TCPTABLE_OWNER_PID;
+        let table = &*table_ptr;
+
+        let num = table.dwNumEntries as usize;
+        let rows_ptr = table.table.as_ptr(); // first row
+        let rows = std::slice::from_raw_parts(rows_ptr, num);
+
+        for row in rows {
+            if row.dwOwningPid != pid {
+                continue;
+            }
+
+            // IPs
+            let local_ip = Ipv4Addr::from(u32::from_be(row.dwLocalAddr));
+            let remote_ip = Ipv4Addr::from(u32::from_be(row.dwRemoteAddr));
+
+            // Ports (low 16 bits, network order)
+            let local_port = u16::from_be(row.dwLocalPort as u16);
+            let remote_port = u16::from_be(row.dwRemotePort as u16);
+
+            let state = tcp_state_to_string(row.dwState).to_string();
+
+            results.push(ConnectionInfo {
+                proto: "tcp".to_string(),
+                local: format!("{}:{}", local_ip, local_port),
+                remote: format!("{}:{}", remote_ip, remote_port),
+                state,
+            });
+        }
+    }
+
+    results
+}
