@@ -16,13 +16,13 @@ use windows::core::PCWSTR;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{CloseHandle, HWND, HANDLE},
+    Foundation::{CloseHandle, HWND, HANDLE, HMODULE},
     System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
         PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     },
-    System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-    System::ProcessStatus::K32GetModuleFileNameExW,
+    System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, OpenProcessToken},
+    System::ProcessStatus::{K32GetModuleFileNameExW, K32EnumProcessModules},
     
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable,
@@ -51,7 +51,19 @@ use windows::Win32::{
         CERT_QUERY_CONTENT_FLAG_ALL,
         CERT_QUERY_FORMAT_FLAG_BINARY,
         CERT_NAME_SIMPLE_DISPLAY_TYPE,
+    },
+    Security::{
+        TOKEN_QUERY,
+        GetTokenInformation,
+        TOKEN_MANDATORY_LABEL,
+        TOKEN_INFORMATION_CLASS,
+        GetSidSubAuthorityCount,
+        GetSidSubAuthority,
+        TokenIntegrityLevel,
+
     }
+
+
 };
 
 
@@ -187,8 +199,8 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
             let is_signed = Some(get_is_signed(pid));
             let signer_name = get_signer_name(pid);
             let connections = get_connections(pid);
-
-
+            let integrity_level = get_integrity_level(pid);
+            let modules = get_modules(pid);
 
             results.push(ProcessInfo {
                 pid,
@@ -197,15 +209,15 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 command_line: None,          // TODO
                 user: None,                  // TODO
                 domain: None,                // TODO
-                integrity_level: None,       // TODO
+                integrity_level,      
                 is_signed,             
-                signer_name,           // TODO
+                signer_name,           
                 sha256: None,                // TODO
                 cpu_percent: None,           // TODO
                 working_set_mb: None,        // TODO
                 thread_count,
-                modules: Vec::new(),         // TODO
-                connections,     // TODO
+                modules,         
+                connections,     
                 derived_flags: DerivedFlags::default(),
             });
 
@@ -243,7 +255,8 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 
 
 #[cfg(target_os = "windows")]
-fn get_process_path(pid: u32) -> Option<String> {
+fn get_process_path(pid: u32) -> Option<String> 
+{
     unsafe {
         // Combine the access rights we need
         let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
@@ -280,9 +293,11 @@ fn get_process_path(pid: u32) -> Option<String> {
 
 
 #[cfg(target_os = "windows")]
-fn get_is_signed(pid: u32) -> bool {
+fn get_is_signed(pid: u32) -> bool 
+{
     // 1) Resolve the executable path for this PID
-    let path = match get_process_path(pid) {
+    let path = match get_process_path(pid) 
+    {
         Some(p) => p,
         None => return false,
     };
@@ -328,7 +343,8 @@ fn get_is_signed(pid: u32) -> bool {
 
 
 #[cfg(target_os = "windows")]
-fn get_signer_name(pid: u32) -> Option<String> {
+fn get_signer_name(pid: u32) -> Option<String> 
+{
     //exe path
     let path = get_process_path(pid)?;
 
@@ -404,7 +420,8 @@ fn get_signer_name(pid: u32) -> Option<String> {
 
 
 #[cfg(target_os = "windows")]
-fn tcp_state_to_string(state: u32) -> &'static str {
+fn tcp_state_to_string(state: u32) -> &'static str 
+{
     match state {
         1 => "CLOSED",
         2 => "LISTEN",
@@ -422,7 +439,8 @@ fn tcp_state_to_string(state: u32) -> &'static str {
     }
 }
 #[cfg(target_os = "windows")]
-fn get_connections(pid: u32) -> Vec<ConnectionInfo> {
+fn get_connections(pid: u32) -> Vec<ConnectionInfo> 
+{
     let mut results = Vec::new();
 
     unsafe {
@@ -492,4 +510,196 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo> {
     }
 
     results
+}
+
+
+#[cfg(target_os = "windows")]
+fn integrity_rid_to_string(rid: u32) -> String 
+{
+    match rid {
+        SECURITY_MANDATORY_UNTRUSTED_RID => "Untrusted",
+        SECURITY_MANDATORY_LOW_RID => "Low",
+        SECURITY_MANDATORY_MEDIUM_RID => "Medium",
+        SECURITY_MANDATORY_HIGH_RID => "High",
+        SECURITY_MANDATORY_SYSTEM_RID => "System",
+        SECURITY_MANDATORY_PROTECTED_PROCESS_RID => "ProtectedProcess",
+        _ => "Unknown",
+    }
+    .to_string()
+}
+#[cfg(target_os = "windows")]
+fn get_integrity_level(pid: u32) -> Option<String> 
+{
+    use std::ptr::null_mut;
+    use std::ffi::c_void;
+
+    unsafe {
+        // 1) Open the process so we can query its token
+        let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+        let h_process = match OpenProcess(access, false, pid) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("OpenProcess({pid}) for integrity level failed: {e:?}");
+                return None;
+            }
+        };
+
+        // 2) Open the process token
+        let mut token_handle = HANDLE(null_mut());
+        // Depending on your windows crate version, this may return BOOL or Result<()>
+        if let Err(e) = OpenProcessToken(h_process, TOKEN_QUERY, &mut token_handle) {
+            eprintln!("OpenProcessToken({pid}) failed: {e:?}");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // 3) First call to get required buffer size
+        let mut length: u32 = 0;
+        let _ = GetTokenInformation(
+            token_handle,
+            TokenIntegrityLevel,
+            None,                  // buffer
+            0,
+            &mut length,
+        );
+        
+        if length == 0 {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // 4) Allocate buffer and get the TOKEN_MANDATORY_LABEL
+        let mut buf = vec![0u8; length as usize];
+
+        let res = GetTokenInformation(
+            token_handle,
+            TokenIntegrityLevel,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            length,
+            &mut length,
+        );
+
+        if let Err(e) = res {
+            eprintln!("GetTokenInformation(TokenIntegrityLevel) failed: {e:?}");
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // Interpret the buffer as TOKEN_MANDATORY_LABEL
+        let tml = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
+        let sid = tml.Label.Sid;
+
+        if sid.0.is_null() {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // 5) Pull the last SubAuthority from the SID – that's the integrity RID
+        let sub_auth_count_ptr = GetSidSubAuthorityCount(sid);
+        if sub_auth_count_ptr.is_null() {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        let sub_auth_count = *sub_auth_count_ptr as u32;
+        if sub_auth_count == 0 {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        let rid_ptr = GetSidSubAuthority(sid, sub_auth_count - 1);
+        if rid_ptr.is_null() {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        let rid = *rid_ptr;
+
+        let level = integrity_rid_to_string(rid);
+
+        let _ = CloseHandle(token_handle);
+        let _ = CloseHandle(h_process);
+
+        Some(level)
+    }
+}
+
+
+
+fn get_modules(pid: u32) -> Vec<String> {
+    let mut modules = Vec::new();
+
+    unsafe {
+        // Open the target process
+        let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+        let h_process = match OpenProcess(access, false, pid) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("OpenProcess({pid}) for modules failed: {e:?}");
+                return modules;
+            }
+        };
+
+        // Buffer for module handles
+        let mut hmods: [HMODULE; 1024] = [HMODULE::default(); 1024];
+        let mut needed_bytes: u32 = 0;
+
+        // Size of our buffer in bytes
+        let cb = (std::mem::size_of::<HMODULE>() * hmods.len()) as u32;
+
+        let ok = K32EnumProcessModules(
+            h_process,
+            hmods.as_mut_ptr(),  // *mut HMODULE
+            cb,                  // buffer size in bytes
+            &mut needed_bytes,   // how many bytes were actually needed
+        );
+
+        if !ok.as_bool() {
+            eprintln!("K32EnumProcessModules({pid}) failed");
+            let _ = CloseHandle(h_process);
+            return modules;
+        }
+
+        // How many modules did we get?
+        if needed_bytes == 0 {
+            let _ = CloseHandle(h_process);
+            return modules;
+        }
+
+        let module_size = std::mem::size_of::<HMODULE>() as u32;
+        let mut count = (needed_bytes / module_size) as usize;
+
+        if count > hmods.len() {
+            count = hmods.len();
+        }
+
+        // For each module, get its full path
+        for hmod in &hmods[..count] {
+            let mut buf = [0u16; 1024];
+
+            // Use the same 3-arg style you already use in get_process_path
+            let len = K32GetModuleFileNameExW(
+                Some(h_process),
+                Some(*hmod),
+                &mut buf,
+            ) as usize;
+
+            if len == 0 {
+                continue;
+            }
+
+            let path = String::from_utf16_lossy(&buf[..len]);
+            modules.push(path);
+        }
+
+        let _ = CloseHandle(h_process);
+    }
+
+    modules
 }
