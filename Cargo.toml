@@ -9,6 +9,10 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
+axum = { version = "0.8", features = ["json"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+
 
 [dependencies.windows]
 version = "0.62.0" 
