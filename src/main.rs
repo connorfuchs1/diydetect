@@ -5,7 +5,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod sensors;
 use sensors::SensorConfig;
 
-mod orchestrator;
 /// which sensor to run
 #[derive(Debug, Clone, ValueEnum)]
 enum Stage {
@@ -173,10 +172,22 @@ async fn run_agent(server_url: String, interval_secs: u64, stage: Stage) {
 ///   - Serve a dashboard API
 ///
 async fn run_orchestrator(listen: String, storage_dir: PathBuf) {
+    eprintln!(
+        "[orchestrator stub] would listen on {} and store snapshots under {}",
+        listen,
+        storage_dir.display()
+    );
 
-    if let Err(e) = orchestrator::start_server(listen, storage_dir).await {
-        eprintln!("Orchestrator server exited with error: {e}");
-    }
-
-
+    // Skeleton for the future:
+    /*
+    // Use axum/warp/etc. here
+    // - POST write JSON to storage_dir
+    // - GET  /v1/findings        -> return latest LLM analysis
+    //
+    // let app = build_router(storage_dir);
+    // axum::Server::bind(&listen.parse().unwrap())
+    //     .serve(app.into_make_service())
+    //     .await
+    //     .unwrap();
+    */
 }
