@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 use std::ffi::{OsStr, c_void};
 
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 
 #[cfg(target_os = "windows")]
@@ -27,7 +27,6 @@ use windows::Win32::{
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable,
         MIB_TCPTABLE_OWNER_PID,
-        MIB_TCPROW_OWNER_PID,
         TCP_TABLE_CLASS,
     },
 
@@ -56,7 +55,6 @@ use windows::Win32::{
         TOKEN_QUERY,
         GetTokenInformation,
         TOKEN_MANDATORY_LABEL,
-        TOKEN_INFORMATION_CLASS,
         GetSidSubAuthorityCount,
         GetSidSubAuthority,
         TokenIntegrityLevel,
@@ -66,8 +64,7 @@ use windows::Win32::{
 
 };
 
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectionInfo {
     pub proto: String,
     pub local: String,
@@ -75,7 +72,7 @@ pub struct ConnectionInfo {
     pub state: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Deserialize)]
 pub struct DerivedFlags {
     pub path_is_temp_or_appdata: bool,
     pub parent_is_office_or_browser: bool,
@@ -84,7 +81,7 @@ pub struct DerivedFlags {
     pub elevated_integrity: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessInfo {
     pub pid: u32,
     pub ppid: u32,
@@ -106,20 +103,6 @@ pub struct ProcessInfo {
 
 
 
-pub fn run_process_sensor(_config: &SensorConfig)
-{
-    println!("Iterating process list and gathering information...");
-    let processes  = collect_process_info();
-    println!("Number of processes: {}", processes.len());
-
-
-    match serde_json::to_string_pretty(&processes) {
-        Ok(json) => println!("{json}"),
-        Err(e) => eprintln!("Failed to serialize process info to JSON: {e}"),
-    }
-}
-
-
 
 
 #[cfg(target_os= "windows")]
@@ -137,7 +120,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
         let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         {
             Ok(handle) => {
-                println!("Snapshot handle: {:?}", handle);
+                //println!("Snapshot handle: {:?}", handle);
                 handle
             }
             Err(e) =>
@@ -185,10 +168,6 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 String::from_utf16_lossy(&raw[..len])
             };
 
-            println!(
-                "PID {:6} | PPID {:6} | Threads {:3} | {}",
-                pid, ppid, thread_count, exe_name
-            );
 
             //get path of exe
 
@@ -224,7 +203,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
             match Process32NextW(snapshot, &mut entry)
             {
                 Ok(_process) => {
-                    println!("{:?}", _process);
+                    //println!("{:?}", _process);
                 }
     
                 Err(_e)=> {
@@ -239,7 +218,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 
     }
 
-    println!("Number of processes running on this computer: {}", count);
+    //println!("Number of processes running on this computer: {}", count);
 
     results
 }
@@ -517,12 +496,12 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
 fn integrity_rid_to_string(rid: u32) -> String 
 {
     match rid {
-        SECURITY_MANDATORY_UNTRUSTED_RID => "Untrusted",
-        SECURITY_MANDATORY_LOW_RID => "Low",
-        SECURITY_MANDATORY_MEDIUM_RID => "Medium",
-        SECURITY_MANDATORY_HIGH_RID => "High",
-        SECURITY_MANDATORY_SYSTEM_RID => "System",
-        SECURITY_MANDATORY_PROTECTED_PROCESS_RID => "ProtectedProcess",
+        _security_mandatory_untrusted_rid => "Untrusted",
+        _security_mandatory_low_rid => "Low",
+        _security_mandatory_medium_rid => "Medium",
+        _security_mandatory_high_rid => "High",
+        _security_mandatory_system_rid => "System",
+        _security_mandatory_protected_process_rid => "ProtectedProcess",
         _ => "Unknown",
     }
     .to_string()

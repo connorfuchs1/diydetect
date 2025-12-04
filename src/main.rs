@@ -1,11 +1,14 @@
 use std::path::PathBuf;
+use sensors::SensorConfig;
+use model::SystemSnapshot;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod sensors;
-use sensors::SensorConfig;
-
+mod model;
 mod orchestrator;
+
+
 /// which sensor to run
 #[derive(Debug, Clone, ValueEnum)]
 enum Stage {
@@ -116,29 +119,38 @@ async fn main() {
 async fn run_scan(stage: Stage, duration_secs: u64) {
     let cfg = SensorConfig { duration_secs };
 
-    println!("Starting scan with config: {:?}", cfg);
+    //println!("Starting scan with config: {:?}", cfg);
 
     if matches!(stage, Stage::Processes | Stage::All) {
-        let cfg_clone = cfg.clone();
-        tokio::task::spawn_blocking(move || {
-            sensors::process::run_process_sensor(&cfg_clone);
+        let cfg_for_process = cfg.clone();
+        let host_id = whoami::hostname(); // or later a CLI override
+
+        // Blocking Win32 calls
+        let snapshot = tokio::task::spawn_blocking(move || {
+            build_process_snapshot(&cfg_for_process, host_id)
         })
         .await
-        .expect("process sensor task panicked");
+        .expect("process snapshot task panicked");
+
+        // For now: just print the JSON to stdout
+        match serde_json::to_string_pretty(&snapshot) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("Failed to serialize snapshot: {e}"),
+        }
     }
 
-    // network sensor 
+    //TODO
     if matches!(stage, Stage::Net | Stage::All) {
         sensors::net::run_net_sensor(&cfg);
     }
 
-    // file sensor 
     if matches!(stage, Stage::File | Stage::All) {
         sensors::file::run_file_sensor(&cfg);
     }
 
-    println!("Scan complete.");
+    //println!("Scan complete.");
 }
+
 
 /// Agent mode: eventually this will run in a loop on each host,
 /// periodically scanning and POSTing JSON to the orchestrator. (we'll probably have an inbetween
@@ -179,4 +191,19 @@ async fn run_orchestrator(listen: String, storage_dir: PathBuf) {
     }
 
 
+}
+
+
+
+//helpers
+fn build_process_snapshot(cfg: &SensorConfig, host_id: String,) -> SystemSnapshot 
+{
+    // For now cfg.duration_secs is unused here; later you might use it for sampling duration
+    let processes = sensors::process::collect_process_info();
+
+    SystemSnapshot {
+        host_id,
+        collected_at: chrono::Utc::now(),
+        processes,
+    }
 }

@@ -7,8 +7,12 @@ use axum::{
 
 use serde_json::Value;
 use std::{net::SocketAddr, path::PathBuf};
-
 use tokio::net::TcpListener;
+
+
+use crate::model::SystemSnapshot;
+
+
 
 #[derive(Clone)]
 struct OrchestratorState {
@@ -49,8 +53,9 @@ async fn health_handler() -> &'static str {
 async fn snapshot_handler(
     State(state): State<OrchestratorState>,
     Path(stage): Path<String>,
-    Json(body): Json<Value>,
-) -> (StatusCode, String) {
+    Json(snapshot): Json<SystemSnapshot>,
+) -> (StatusCode, String) 
+{
     // Ensure storage dir exists
     if let Err(e) = std::fs::create_dir_all(&state.storage_dir) {
         eprintln!(
@@ -60,15 +65,15 @@ async fn snapshot_handler(
         return (StatusCode::INTERNAL_SERVER_ERROR, "storage error".into());
     }
 
-    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let filename = format!("snapshot-{}-{}.json", ts, stage);
+    let ts = snapshot.collected_at.format("%Y%m%d-%H%M%S").to_string();
+    let filename = format!("{}-{}-{}.json", snapshot.host_id, ts, stage);
     let path = state.storage_dir.join(filename);
 
-    let pretty = match serde_json::to_vec_pretty(&body) {
+    let pretty = match serde_json::to_vec_pretty(&snapshot) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("Failed to re-serialize snapshot JSON: {e}");
-            return (StatusCode::BAD_REQUEST, "invalid json".into());
+            return (StatusCode::BAD_REQUEST, "invalid snapshot".into());
         }
     };
 
@@ -78,7 +83,8 @@ async fn snapshot_handler(
     }
 
     println!(
-        "Stored snapshot for stage={} at {}",
+        "Stored snapshot for host={} stage={} at {}",
+        snapshot.host_id,
         stage,
         path.display()
     );
