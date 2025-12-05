@@ -1,12 +1,15 @@
 use std::path::PathBuf;
-use sensors::SensorConfig;
-use model::SystemSnapshot;
-
-use clap::{Parser, Subcommand, ValueEnum};
+use std::time::Duration;
 
 mod sensors;
 mod model;
 mod orchestrator;
+
+use sensors::SensorConfig;
+use model::SystemSnapshot;
+use reqwest::Client;
+use clap::{Parser, Subcommand, ValueEnum};
+
 
 
 /// which sensor to run
@@ -105,8 +108,7 @@ async fn main() {
             stage,
             host_id,
         } => {
-            let _ = host_id;
-            run_agent(server_url, interval_secs, stage).await;
+            run_agent(server_url, interval_secs, stage, host_id).await;
         }
 
         Commands::Orchestrator { listen, storage_dir } => {
@@ -152,31 +154,187 @@ async fn run_scan(stage: Stage, duration_secs: u64) {
 }
 
 
+///=============================================AGENTS=============================================================
+
+
 /// Agent mode: eventually this will run in a loop on each host,
-/// periodically scanning and POSTing JSON to the orchestrator. (we'll probably have an inbetween
+/// periodically scanning and POSTing JSON to the orchestrator. 
+/// Runs multiple multithreaded agents (process, file, network, etc)
+/// (we'll probably have an inbetween
 /// stage to determine if the scanned data is worthy enough to be shipped to llm(s))
-///
-async fn run_agent(server_url: String, interval_secs: u64, stage: Stage) {
-    eprintln!(
-        "[agent stub] would periodically run {:?} every {}s and POST results to {}",
-        stage, interval_secs, server_url
+/// W
+async fn run_agent(
+    server_url: String,
+    interval_secs: u64,
+    stage: Stage,
+    host_id: Option<String>,
+) {
+    let host = host_id.unwrap_or_else(whoami::hostname);
+    let cfg = SensorConfig {
+        duration_secs: interval_secs, // reuse for now
+    };
+
+    let base = server_url.trim_end_matches('/').to_string();
+    let client = Client::new();
+
+    println!(
+        "Agent starting for host={} -> {} (every {}s, stage={:?})",
+        host, base, interval_secs, stage
     );
 
-    // Skeleton for the future:
-    /*
-    let cfg = SensorConfig { duration_secs: interval_secs };
+    match stage 
+    {
+        Stage::Processes => 
+        {
+            // Single-stage mode: just run the process loop
+            run_process_agent(client, base, host, cfg, interval_secs).await;
+        }
 
-    loop {
-        // 1) Collect snapshot(s) for the requested stage(s)
-        run_scan(stage.clone(), cfg.duration_secs).await;
+        Stage::Net | Stage::File => 
+        {
+            eprintln!(
+                "Agent: stage {:?} not implemented yet, using processes only.",
+                stage
+            );
+        }
 
-        // 2) TODO: instead of printing, serialize to JSON and POST to server_url
-        //   send SystemSnapshot as application/json
+        Stage::All => 
+        {
+            // Multi-stage mode: spawn multiple loops (only processes implemented now)
+            let client_proc = client.clone();
+            let base_proc = base.clone();
+            let host_proc = host.clone();
+            let cfg_proc = cfg.clone();
 
-        tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+            let proc_task = tokio::spawn(async move {
+                run_process_agent(
+                    client_proc,
+                    base_proc,
+                    host_proc,
+                    cfg_proc,
+                    interval_secs,
+                )
+                .await
+            });
+
+            // TODO: later
+            // let net_task = tokio::spawn(async move {
+            //     run_net_stage_loop(...).await
+            // });
+            //
+            // let file_task = tokio::spawn(async move {
+            //     run_file_stage_loop(...).await
+            // });
+
+            // For now just wait on the process loop (it runs forever until killed)
+            let _ = proc_task.await;
+        }
+
+        // For now, alias Net / File to Processes until those are implemented
+
     }
-    */
 }
+
+
+//Process agent functionality
+
+async fn run_process_agent(
+    client: Client,
+    base_url: String,
+    host: String,
+    cfg: SensorConfig,
+    interval_secs: u64,
+) 
+{
+    let url = format!("{}/v1/snapshot/processes", base_url);
+
+    loop 
+    {
+        //Build snapshot (heavy Win32 work -> spawn_blocking)
+        let cfg_clone = cfg.clone();
+        let host_clone = host.clone();
+
+        let snapshot = match tokio::task::spawn_blocking(move || 
+        {
+            build_process_snapshot(&cfg_clone, host_clone)
+        })
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => 
+            {
+                eprintln!("Agent[processes]: snapshot task panicked: {e}");
+                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+                continue;
+            }
+        };
+
+        //POST snapshot
+        println!("Agent[processes]: POSTing snapshot to {}", url);
+        match client.post(&url).json(&snapshot).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                println!(
+                    "Agent[processes]: snapshot posted successfully ({})",
+                    resp.status()
+                );
+            }
+            Ok(resp) => {
+                eprintln!(
+                    "Agent[processes]: server returned error status {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                eprintln!("Agent[processes]: error POSTing snapshot: {e}");
+            }
+        }
+
+        //Wait for next interval
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    }
+}
+
+
+//Process agent helpers
+fn build_process_snapshot(cfg: &SensorConfig, host_id: String,) -> SystemSnapshot 
+{
+    // For now cfg.duration_secs is unused here; later you might use it for sampling duration
+    let processes = sensors::process::collect_process_info();
+
+    SystemSnapshot {
+        host_id,
+        collected_at: chrono::Utc::now(),
+        processes,
+    }
+}
+
+
+
+//File Agent Functionality
+
+// ....TODO...
+
+
+
+
+
+//Net Agent Functionality
+
+//  ....TODO....
+
+//============================================ORCHESTRATOR==========================================================
+
+
+
+
+
+
+
+
+
+
+
+
 
 /// Orchestrator mode: eventually this will:
 ///   - Listen for incoming snapshots from agents
@@ -195,15 +353,3 @@ async fn run_orchestrator(listen: String, storage_dir: PathBuf) {
 
 
 
-//helpers
-fn build_process_snapshot(cfg: &SensorConfig, host_id: String,) -> SystemSnapshot 
-{
-    // For now cfg.duration_secs is unused here; later you might use it for sampling duration
-    let processes = sensors::process::collect_process_info();
-
-    SystemSnapshot {
-        host_id,
-        collected_at: chrono::Utc::now(),
-        processes,
-    }
-}

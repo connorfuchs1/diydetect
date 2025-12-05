@@ -281,7 +281,7 @@ fn get_is_signed(pid: u32) -> bool
         None => return false,
     };
 
-    // 2) Convert Rust &str -> null-terminated UTF-16 for Win32
+    // 2) Convert Rust &str null-terminated UTF-16 for Win32
     let wide: Vec<u16> = OsStr::new(&path)
         .encode_wide()
         .chain(std::iter::once(0))
