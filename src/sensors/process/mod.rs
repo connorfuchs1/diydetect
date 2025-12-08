@@ -3,10 +3,13 @@ use crate::sensors::SensorConfig;
 use std::ptr::null_mut;
 use std::net::Ipv4Addr;
 use std::ffi::{OsStr, c_void};
+use std::fs::File;
+use std::io::Read;
 
+
+use sha2::{Sha256, Digest};
 
 use serde::{Deserialize, Serialize};
-
 
 #[cfg(target_os = "windows")]
 use std::{mem::size_of, os::windows::ffi::OsStrExt};
@@ -16,14 +19,20 @@ use windows::core::PCWSTR;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{CloseHandle, HWND, HANDLE, HMODULE},
+    Foundation::{CloseHandle, HWND, HANDLE, HMODULE, FILETIME},
     System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
         PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     },
-    System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, OpenProcessToken},
+    System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, OpenProcessToken, GetProcessTimes},
     System::ProcessStatus::{K32GetModuleFileNameExW, K32EnumProcessModules},
     
+    System::SystemInformation::{
+        GetSystemTimeAsFileTime,
+        GetSystemInfo,
+        SYSTEM_INFO,
+    },
+
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable,
         MIB_TCPTABLE_OWNER_PID,
@@ -58,10 +67,7 @@ use windows::Win32::{
         GetSidSubAuthorityCount,
         GetSidSubAuthority,
         TokenIntegrityLevel,
-
     }
-
-
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -100,9 +106,6 @@ pub struct ProcessInfo {
     pub connections: Vec<ConnectionInfo>,
     pub derived_flags: DerivedFlags,
 }
-
-
-
 
 
 #[cfg(target_os= "windows")]
@@ -171,15 +174,15 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 
             //get path of exe
 
-
-
-
             let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
             let is_signed = Some(get_is_signed(pid));
             let signer_name = get_signer_name(pid);
             let connections = get_connections(pid);
             let integrity_level = get_integrity_level(pid);
             let modules = get_modules(pid);
+            let sha256 = get_sha256(pid);
+            let cpu_percent = get_cpu_percentage(pid);
+
 
             results.push(ProcessInfo {
                 pid,
@@ -191,8 +194,8 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 integrity_level,      
                 is_signed,             
                 signer_name,           
-                sha256: None,                // TODO
-                cpu_percent: None,           // TODO
+                sha256,              
+                cpu_percent,           
                 working_set_mb: None,        // TODO
                 thread_count,
                 modules,         
@@ -223,16 +226,122 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
     results
 }
 
+#[cfg(target_os = "windows")]
+fn get_cpu_percentage(pid: u32) -> Option<f32> {
+    unsafe {
+        // Open the process so we can query its times
+        let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+        let h_process = match OpenProcess(access, false, pid) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("OpenProcess({pid}) for CPU% failed: {e:?}");
+                return None;
+            }
+        };
+
+        // Get process creation/exit/kernel/user times
+        let mut ft_creation = FILETIME::default();
+        let mut ft_exit     = FILETIME::default();
+        let mut ft_kernel   = FILETIME::default();
+        let mut ft_user     = FILETIME::default();
+
+        if let Err(e) = GetProcessTimes(
+            h_process,
+            &mut ft_creation,
+            &mut ft_exit,
+            &mut ft_kernel,
+            &mut ft_user,
+        ) {
+            eprintln!("GetProcessTimes({pid}) failed: {e:?}");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // Current system time
+        let mut ft_now = GetSystemTimeAsFileTime();
 
 
+        let creation_ticks = filetime_to_u64(ft_creation);
+        let now_ticks      = filetime_to_u64(ft_now);
+
+        if now_ticks <= creation_ticks {
+            let _ = CloseHandle(h_process);
+            return Some(0.0);
+        }
+
+        // 100-ns units
+        let elapsed_100ns = now_ticks - creation_ticks;
+
+        // Total CPU time this process has consumed (user + kernel)
+        let kernel_ticks = filetime_to_u64(ft_kernel);
+        let user_ticks   = filetime_to_u64(ft_user);
+        let proc_ticks   = kernel_ticks + user_ticks;
+
+        // Number of logical processors
+        let mut sys_info = SYSTEM_INFO::default();
+        GetSystemInfo(&mut sys_info);
+        let num_procs = if sys_info.dwNumberOfProcessors == 0 {
+            1.0
+        } else {
+            sys_info.dwNumberOfProcessors as f64
+        };
+
+        // Average CPU usage over process lifetime:
+        // CPU% ~= (proc_time / (elapsed_time * num_procs)) * 100
+        let cpu = (proc_ticks as f64)
+            / ((elapsed_100ns as f64) * num_procs)
+            * 100.0;
+
+        let _ = CloseHandle(h_process);
+
+        // Clamp to [0, 100] to avoid weird rounding artifacts
+        Some(cpu.clamp(0.0, 100.0) as f32)
+    }
+}
 
 
+#[cfg(target_os = "windows")]
+fn filetime_to_u64(ft: FILETIME) -> u64 {
+    // FILETIME is number of 100-ns intervals since 1601-01-01
+    ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64 & 0xFFFF_FFFF)
+}
+
+
+#[cfg(target_os = "windows")]
+fn get_sha256(pid: u32) -> Option<String> 
+{
+    // get the full on disk path for this process
+
+    let path = get_process_path(pid)?;
+
+    // try to open the file. just return None if protected.
+    let mut file = File::open(&path).ok()?;
+
+    // stream the file into our SHA-256 hasher
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+
+    loop 
+    {
+
+        let read = match file.read(&mut buf) {
+            Ok(0) => break,          // EOF
+            Ok(n) => n,
+            Err(_) => return None,   // io error  
+        };
+
+        hasher.update(&buf[..read]);
+    }
+
+    // Finalize and hex encode
+    let digest = hasher.finalize();
+    let hex = digest.iter().map(|b| format!("{:02x}", b)).collect();
+
+    Some(hex)
+
+}
 
 ///HELPERS FOR ACQUIRING PROCESS DETAILS
-
-
-
-
 #[cfg(target_os = "windows")]
 fn get_process_path(pid: u32) -> Option<String> 
 {
