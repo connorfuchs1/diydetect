@@ -12,6 +12,9 @@ use sha2::{Sha256, Digest};
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "windows")]
+use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+
+#[cfg(target_os = "windows")]
 use std::{mem::size_of, os::windows::ffi::OsStrExt};
 
 #[cfg(target_os = "windows")]
@@ -108,6 +111,68 @@ pub struct ProcessInfo {
 }
 
 
+
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct UNICODE_STRING {
+    Length: u16,
+    MaximumLength: u16,
+    Buffer: *mut u16,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct RTL_USER_PROCESS_PARAMETERS {
+    Reserved1: [u8; 16],
+    Reserved2: [*mut c_void; 10],
+    ImagePathName: UNICODE_STRING,
+    CommandLine: UNICODE_STRING,
+}
+
+
+
+//PEB WALKING
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct PEB {
+    Reserved1: [u8; 2],
+    BeingDebugged: u8,
+    Reserved2: [u8; 1],
+    Reserved3: [*mut c_void; 2],
+    Ldr: *mut c_void,
+    ProcessParameters: *mut RTL_USER_PROCESS_PARAMETERS,
+    // we don’t care about the rest
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct PROCESS_BASIC_INFORMATION {
+    Reserved1: *mut c_void,
+    PebBaseAddress: *mut PEB,
+    Reserved2: [*mut c_void; 2],
+    UniqueProcessId: usize,
+    Reserved3: *mut c_void,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtQueryInformationProcess(
+        ProcessHandle: HANDLE,
+        ProcessInformationClass: u32,   // 0 = ProcessBasicInformation
+        ProcessInformation: *mut c_void,
+        ProcessInformationLength: u32,
+        ReturnLength: *mut u32,
+    ) -> i32; // NTSTATUS
+}
+
+#[cfg(target_os = "windows")]
+const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+
+
+
+
 #[cfg(target_os= "windows")]
 pub fn collect_process_info() -> Vec<ProcessInfo>
 {
@@ -172,8 +237,7 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
             };
 
 
-            //get path of exe
-
+            //Gather ALL THE DATA
             let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
             let is_signed = Some(get_is_signed(pid));
             let signer_name = get_signer_name(pid);
@@ -182,13 +246,13 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
             let modules = get_modules(pid);
             let sha256 = get_sha256(pid);
             let cpu_percent = get_cpu_percentage(pid);
-
+            let command_line = get_command_line(pid);
 
             results.push(ProcessInfo {
                 pid,
                 ppid,
                 exe_path,
-                command_line: None,          // TODO
+                command_line,          
                 user: None,                  // TODO
                 domain: None,                // TODO
                 integrity_level,      
@@ -227,9 +291,137 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 }
 
 #[cfg(target_os = "windows")]
+fn get_command_line(pid: u32) -> Option<String> {
+    unsafe {
+        // Open the process so we can query its PEB and read memory
+        let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+        let h_process = match OpenProcess(access, false, pid) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("OpenProcess({pid}) for command line failed: {e:?}");
+                return None;
+            }
+        };
+
+        // Ask ntdll for basic process info -> gives us PEB address
+        let mut pbi: PROCESS_BASIC_INFORMATION = std::mem::zeroed();
+        let mut return_len: u32 = 0;
+
+        let status = NtQueryInformationProcess(
+            h_process,
+            PROCESS_BASIC_INFORMATION_CLASS,                  // 0
+            &mut pbi as *mut _ as *mut c_void,
+            std::mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
+            &mut return_len,
+        );
+
+        if status != 0 {
+            // Non-zero NTSTATUS = failure
+            eprintln!("NtQueryInformationProcess({pid}) failed with NTSTATUS=0x{status:08x}");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        if pbi.PebBaseAddress.is_null() {
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // --- Read the PEB from the remote process ---
+        let mut peb: PEB = std::mem::zeroed();
+        let mut bytes_read: usize = 0;
+
+        let res = ReadProcessMemory(
+            h_process,
+            pbi.PebBaseAddress as *const c_void,
+            &mut peb as *mut _ as *mut c_void,
+            std::mem::size_of::<PEB>(),
+            Some(&mut bytes_read as *mut usize),
+        );
+
+        if let Err(e) = res {
+            eprintln!("ReadProcessMemory({pid}, PEB) failed: {e:?}");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        if bytes_read < std::mem::size_of::<PEB>() {
+            eprintln!("ReadProcessMemory({pid}, PEB) short read");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        if peb.ProcessParameters.is_null() {
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // --- Read RTL_USER_PROCESS_PARAMETERS ---
+        let mut params: RTL_USER_PROCESS_PARAMETERS = std::mem::zeroed();
+        let mut bytes_read2: usize = 0;
+
+        let res = ReadProcessMemory(
+            h_process,
+            peb.ProcessParameters as *const c_void,
+            &mut params as *mut _ as *mut c_void,
+            std::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>(),
+            Some(&mut bytes_read2 as *mut usize),
+        );
+
+        if let Err(e) = res {
+            eprintln!("ReadProcessMemory({pid}, ProcessParameters) failed: {e:?}");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        if bytes_read2 < std::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>() {
+            eprintln!("ReadProcessMemory({pid}, ProcessParameters) short read");
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        let cmd = params.CommandLine;
+
+        if cmd.Length == 0 || cmd.Buffer.is_null() {
+            let _ = CloseHandle(h_process);
+            return None;
+        }
+
+        // CommandLine.Length is in bytes, not chars
+        let char_count = (cmd.Length / 2) as usize;
+        let mut buf: Vec<u16> = vec![0u16; char_count];
+        let mut bytes_read3: usize = 0;
+
+        let res = ReadProcessMemory(
+            h_process,
+            cmd.Buffer as *const c_void,
+            buf.as_mut_ptr() as *mut c_void,
+            cmd.Length as usize,
+            Some(&mut bytes_read3 as *mut usize),
+        );
+
+        let _ = CloseHandle(h_process);
+
+        if let Err(e) = res {
+            eprintln!("ReadProcessMemory({pid}, CommandLine.Buffer) failed: {e:?}");
+            return None;
+        }
+
+        if bytes_read3 < cmd.Length as usize {
+            eprintln!("ReadProcessMemory({pid}, CommandLine.Buffer) short read");
+            return None;
+        }
+
+        // Convert UTF-16 -> Rust String
+        Some(String::from_utf16_lossy(&buf))
+    }
+}
+
+
+#[cfg(target_os = "windows")]
 fn get_cpu_percentage(pid: u32) -> Option<f32> {
     unsafe {
-        // Open the process so we can query its times
+        // open the process so we can query times
         let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
         let h_process = match OpenProcess(access, false, pid) {
             Ok(h) => h,
@@ -239,7 +431,7 @@ fn get_cpu_percentage(pid: u32) -> Option<f32> {
             }
         };
 
-        // Get process creation/exit/kernel/user times
+        // get process creation/exit/kernel/user times
         let mut ft_creation = FILETIME::default();
         let mut ft_exit     = FILETIME::default();
         let mut ft_kernel   = FILETIME::default();
@@ -257,7 +449,7 @@ fn get_cpu_percentage(pid: u32) -> Option<f32> {
             return None;
         }
 
-        // Current system time
+        // Current time
         let mut ft_now = GetSystemTimeAsFileTime();
 
 
@@ -323,7 +515,6 @@ fn get_sha256(pid: u32) -> Option<String>
 
     loop 
     {
-
         let read = match file.read(&mut buf) {
             Ok(0) => break,          // EOF
             Ok(n) => n,
