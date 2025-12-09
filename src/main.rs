@@ -82,7 +82,15 @@ enum Commands {
         /// dir to store incoming JSON snapshots from sensors
         #[arg(long, default_value = "captures")]
         storage_dir: PathBuf,
+
+        #[arg(long = "llm", value_delimiter = ',', num_args = 1..)]
+        llm: Vec<String>,
     },
+
+
+
+    
+    
 }
 
 #[tokio::main]
@@ -111,8 +119,8 @@ async fn main() {
             run_agent(server_url, interval_secs, stage, host_id).await;
         }
 
-        Commands::Orchestrator { listen, storage_dir } => {
-            run_orchestrator(listen, storage_dir).await;
+        Commands::Orchestrator { listen, storage_dir, llm } => {
+            run_orchestrator(listen, storage_dir, llm).await;
         }
     }
 }
@@ -342,9 +350,9 @@ fn build_process_snapshot(cfg: &SensorConfig, host_id: String,) -> SystemSnapsho
 ///   - Trigger LLM analysis pipelines
 ///   - Serve a dashboard API
 ///
-async fn run_orchestrator(listen: String, storage_dir: PathBuf) {
+async fn run_orchestrator(listen: String, storage_dir: PathBuf, llm: Vec<String>) {
 
-    if let Err(e) = orchestrator::start_server(listen, storage_dir).await {
+    if let Err(e) = orchestrator::start_server(listen, storage_dir, llm).await {
         eprintln!("Orchestrator server exited with error: {e}");
     }
 

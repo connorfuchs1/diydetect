@@ -1,5 +1,3 @@
-use crate::sensors::SensorConfig;
-
 use std::ptr::null_mut;
 use std::net::Ipv4Addr;
 use std::ffi::{OsStr, c_void};
@@ -76,7 +74,8 @@ use windows::Win32::{
 };
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ConnectionInfo {
+pub struct ConnectionInfo 
+{
     pub proto: String,
     pub local: String,
     pub remote: String,
@@ -84,7 +83,8 @@ pub struct ConnectionInfo {
 }
 
 #[derive(Debug, Serialize, Default, Deserialize)]
-pub struct DerivedFlags {
+pub struct DerivedFlags 
+{
     pub path_is_temp_or_appdata: bool,
     pub parent_is_office_or_browser: bool,
     pub has_outbound_network: bool,
@@ -93,7 +93,8 @@ pub struct DerivedFlags {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ProcessInfo {
+pub struct ProcessInfo 
+{
     pub pid: u32,
     pub ppid: u32,
     pub exe_path: String,
@@ -117,7 +118,8 @@ pub struct ProcessInfo {
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
-struct UNICODE_STRING {
+struct UNICODE_STRING 
+{
     Length: u16,
     MaximumLength: u16,
     Buffer: *mut u16,
@@ -125,7 +127,8 @@ struct UNICODE_STRING {
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
-struct RTL_USER_PROCESS_PARAMETERS {
+struct RTL_USER_PROCESS_PARAMETERS 
+{
     Reserved1: [u8; 16],
     Reserved2: [*mut c_void; 10],
     ImagePathName: UNICODE_STRING,
@@ -137,7 +140,8 @@ struct RTL_USER_PROCESS_PARAMETERS {
 //PEB WALKING
 #[cfg(target_os = "windows")]
 #[repr(C)]
-struct PEB {
+struct PEB 
+{
     Reserved1: [u8; 2],
     BeingDebugged: u8,
     Reserved2: [u8; 1],
@@ -149,7 +153,8 @@ struct PEB {
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
-struct PROCESS_BASIC_INFORMATION {
+struct PROCESS_BASIC_INFORMATION 
+{
     Reserved1: *mut c_void,
     PebBaseAddress: *mut PEB,
     Reserved2: [*mut c_void; 2],
@@ -159,7 +164,8 @@ struct PROCESS_BASIC_INFORMATION {
 
 #[cfg(target_os = "windows")]
 #[link(name = "ntdll")]
-unsafe extern "system" {
+unsafe extern "system" 
+{
     fn NtQueryInformationProcess(
         ProcessHandle: HANDLE,
         ProcessInformationClass: u32,   // 0 = ProcessBasicInformation
@@ -179,17 +185,15 @@ const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
 pub fn collect_process_info() -> Vec<ProcessInfo>
 {
 
-    let mut count = 0;
-
     let mut results: Vec<ProcessInfo> = Vec::new();
 
     unsafe 
     {
         //snapshot of all processes
-
         let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         {
-            Ok(handle) => {
+            Ok(handle) => 
+            {
                 //println!("Snapshot handle: {:?}", handle);
                 handle
             }
@@ -225,32 +229,34 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 
         loop   
         {
-            count += 1;
 
             let pid = entry.th32ProcessID;
             let ppid = entry.th32ParentProcessID;
             let thread_count = entry.cntThreads;
 
             // Extract exe name from szExeFile (UTF-16, null-terminated)
-            let exe_name = {
+            let exe_name = 
+            {
                 let raw = &entry.szExeFile;
                 let len = raw.iter().position(|c| *c == 0).unwrap_or(raw.len());
                 String::from_utf16_lossy(&raw[..len])
             };
 
+            
+            //Gather ALL THE PROCESS DATA
+            let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone()); //path of given process
+            let is_signed = Some(get_is_signed(pid));                            //is the process signed?
+            let signer_name = get_signer_name(pid);                            //name of who signed it 
+            let connections = get_connections(pid);                       //all of the connections associated w/ process
+            let integrity_level = get_integrity_level(pid);                    //get the given integrity level process running w/
+            let modules = get_modules(pid);                                       //all modules associated with a process
+            let sha256 = get_sha256(pid);                                      //sha256 hash of a process
+            let cpu_percent = get_cpu_percentage(pid);                            //how much cpu a process is using
+            let command_line = get_command_line(pid);                          //command associated with a running process
+            
 
-            //Gather ALL THE DATA
-            let exe_path = get_process_path(pid).unwrap_or_else( || exe_name.clone());
-            let is_signed = Some(get_is_signed(pid));
-            let signer_name = get_signer_name(pid);
-            let connections = get_connections(pid);
-            let integrity_level = get_integrity_level(pid);
-            let modules = get_modules(pid);
-            let sha256 = get_sha256(pid);
-            let cpu_percent = get_cpu_percentage(pid);
-            let command_line = get_command_line(pid);
-
-            results.push(ProcessInfo {
+            results.push(ProcessInfo 
+            {
                 pid,
                 ppid,
                 exe_path,
@@ -264,30 +270,26 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
                 cpu_percent,           
                 working_set_mb: None,        // TODO
                 thread_count,
-                modules,         
+                modules: Vec::new(),        
                 connections,     
                 derived_flags: DerivedFlags::default(),
             });
 
             match Process32NextW(snapshot, &mut entry)
             {
-                Ok(_process) => {
-                    //println!("{:?}", _process);
+                Ok(_process) => 
+                {
+
                 }
     
-                Err(_e)=> {
+                Err(_e)=>
+                {
                     break
-                }
-                
+                }     
             }
-
         }
-
         let _ = CloseHandle(snapshot);
-
     }
-
-    //println!("Number of processes running on this computer: {}", count);
 
     results
 }
