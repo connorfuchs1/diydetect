@@ -70,7 +70,9 @@ use windows::Win32::{
         GetSidSubAuthorityCount,
         GetSidSubAuthority,
         TokenIntegrityLevel,
-    }
+    },
+
+
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -764,8 +766,10 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
         let rows_ptr = table.table.as_ptr(); // first row
         let rows = std::slice::from_raw_parts(rows_ptr, num);
 
-        for row in rows {
-            if row.dwOwningPid != pid {
+        for row in rows 
+        {
+            if row.dwOwningPid != pid 
+            {
                 continue;
             }
 
@@ -793,19 +797,20 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
 
 
 #[cfg(target_os = "windows")]
-fn integrity_rid_to_string(rid: u32) -> String 
-{
-    match rid {
-        _security_mandatory_untrusted_rid => "Untrusted",
-        _security_mandatory_low_rid => "Low",
-        _security_mandatory_medium_rid => "Medium",
-        _security_mandatory_high_rid => "High",
-        _security_mandatory_system_rid => "System",
-        _security_mandatory_protected_process_rid => "ProtectedProcess",
-        _ => "Unknown",
-    }
-    .to_string()
+fn integrity_rid_to_string(rid: u32) -> String {
+    let s = match rid {
+        0x0000 => "Untrusted",
+        0x1000 => "Low",
+        0x2000 => "Medium",
+        0x3000 => "High",
+        0x4000 => "System",
+        0x5000 => "ProtectedProcess",
+        _      => "Unknown",
+    };
+    s.to_string()
 }
+
+
 #[cfg(target_os = "windows")]
 fn get_integrity_level(pid: u32) -> Option<String> 
 {
@@ -876,7 +881,7 @@ fn get_integrity_level(pid: u32) -> Option<String>
             return None;
         }
 
-        // 5) Pull the last SubAuthority from the SID – that's the integrity RID
+        // pull the last SubAuthority from the SID – that's the integrity RID
         let sub_auth_count_ptr = GetSidSubAuthorityCount(sid);
         if sub_auth_count_ptr.is_null() {
             let _ = CloseHandle(token_handle);
