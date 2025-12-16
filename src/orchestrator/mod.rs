@@ -99,10 +99,13 @@ pub async fn start_server(
     let llm_vec = parse_llm_flags(llm_flags)?;
 
     // Early env validation
-    for target in &llm_vec {
-        match target.provider {
+    for target in &llm_vec 
+    {
+        match target.provider 
+        {
             LlmProvider::OpenAi => {
-                if std::env::var("OPENAI_API_KEY").is_err() {
+                if std::env::var("OPENAI_API_KEY").is_err() 
+                {
                     eprintln!(
                         "Warning: LLM target '{}' uses OpenAI but OPENAI_API_KEY is not set.",
                         target.id
@@ -110,7 +113,8 @@ pub async fn start_server(
                 }
             }
             LlmProvider::Anthropic => {
-                if std::env::var("ANTHROPIC_API_KEY").is_err() {
+                if std::env::var("ANTHROPIC_API_KEY").is_err() 
+                {
                     eprintln!(
                         "Warning: LLM target '{}' uses Anthropic but ANTHROPIC_API_KEY is not set.",
                         target.id
@@ -123,7 +127,8 @@ pub async fn start_server(
         }
     }
 
-    let state = OrchestratorState {
+    let state = OrchestratorState 
+    {
         storage_dir,
         http_client: Client::new(),
         llm_targets: Arc::new(llm_vec),
@@ -144,7 +149,8 @@ pub async fn start_server(
 }
 
 
-async fn health_handler() -> &'static str {
+async fn health_handler() -> &'static str 
+{
     "ok"
 }
 
@@ -153,7 +159,8 @@ async fn snapshot_handler(
     State(state): State<OrchestratorState>,
     AxumPath(stage): AxumPath<String>,
     Json(snapshot): Json<SystemSnapshot>,
-) -> (StatusCode, String) {
+) -> (StatusCode, String) 
+{
     // Pick snapshot directory based on stage
     let snapshots_subdir = match stage.as_str() {
         "processes" => "process_snapshots",
@@ -164,7 +171,8 @@ async fn snapshot_handler(
 
     let snapshots_dir = state.storage_dir.join(snapshots_subdir);
 
-    if let Err(e) = std::fs::create_dir_all(&snapshots_dir) {
+    if let Err(e) = std::fs::create_dir_all(&snapshots_dir) 
+    {
         eprintln!(
             "Failed to create snapshot dir {}: {e}",
             snapshots_dir.display()
@@ -175,16 +183,19 @@ async fn snapshot_handler(
     let ts = snapshot.collected_at.format("%Y%m%d-%H%M%S").to_string();
 
 
-    let filename = if stage == "processes" {
+    let filename = if stage == "processes" 
+    {
         format!("process_snapshot_{}_{}.json", ts, snapshot.host_id)
     }
-    else {
+    else 
+    {
         format!("{}_snapshot_{}_{}.json", stage, ts, snapshot.host_id)
     };
 
     let path = snapshots_dir.join(&filename);
 
-    let pretty = match serde_json::to_vec_pretty(&snapshot) {
+    let pretty = match serde_json::to_vec_pretty(&snapshot) 
+    {
         Ok(b) => b,
         Err(e) => {
             eprintln!("Failed to re-serialize snapshot JSON: {e}");
@@ -192,7 +203,8 @@ async fn snapshot_handler(
         }
     };
 
-    if let Err(e) = std::fs::write(&path, &pretty) {
+    if let Err(e) = std::fs::write(&path, &pretty) 
+    {
         eprintln!("Failed to write snapshot to {}: {e}", path.display());
         return (StatusCode::INTERNAL_SERVER_ERROR, "write failed".into());
     }
@@ -209,8 +221,10 @@ async fn snapshot_handler(
     let stage_clone = stage.clone();
     let path_clone = path.clone();
 
-    tokio::spawn(async move {
-        if let Err(e) = send_to_llms(state_clone, stage_clone, path_clone).await {
+    tokio::spawn(async move 
+    {
+        if let Err(_e) = send_to_llms(state_clone, stage_clone, path_clone).await 
+        {
             eprintln!("LLM dispatch failed for stage=");
         }
     });
@@ -247,7 +261,8 @@ async fn send_to_llms(
         );
 
         match target.provider {
-            LlmProvider::OpenAi => {
+            LlmProvider::OpenAi => 
+            {
                 // Note the borrows:
                 //  - &stage  : &String -> &str
                 //  - &snapshot_path : &PathBuf -> &Path
@@ -320,7 +335,8 @@ async fn dispatch_openai(
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
     // API key (required)
-    let api_key = match std::env::var("OPENAI_API_KEY") {
+    let api_key = match std::env::var("OPENAI_API_KEY") 
+    {
         Ok(k) => k,
         Err(e) => {
             eprintln!(
@@ -345,7 +361,8 @@ async fn dispatch_openai(
         snapshot_json
     );
 
-    let body = ChatRequestBody {
+    let body = ChatRequestBody 
+    {
         model: target.model.clone(),
         temperature: 0.0,
         messages: vec![

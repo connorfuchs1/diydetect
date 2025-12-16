@@ -295,7 +295,8 @@ pub fn collect_process_info() -> Vec<ProcessInfo>
 }
 
 #[cfg(target_os = "windows")]
-fn get_command_line(pid: u32) -> Option<String> {
+fn get_command_line(pid: u32) -> Option<String> 
+{
     unsafe {
         // Open the process so we can query its PEB and read memory
         let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
@@ -319,14 +320,16 @@ fn get_command_line(pid: u32) -> Option<String> {
             &mut return_len,
         );
 
-        if status != 0 {
+        if status != 0 
+        {
             // Non-zero NTSTATUS = failure
             eprintln!("NtQueryInformationProcess({pid}) failed with NTSTATUS=0x{status:08x}");
             let _ = CloseHandle(h_process);
             return None;
         }
 
-        if pbi.PebBaseAddress.is_null() {
+        if pbi.PebBaseAddress.is_null() 
+        {
             let _ = CloseHandle(h_process);
             return None;
         }
@@ -343,19 +346,22 @@ fn get_command_line(pid: u32) -> Option<String> {
             Some(&mut bytes_read as *mut usize),
         );
 
-        if let Err(e) = res {
+        if let Err(e) = res 
+        {
             eprintln!("ReadProcessMemory({pid}, PEB) failed: {e:?}");
             let _ = CloseHandle(h_process);
             return None;
         }
 
-        if bytes_read < std::mem::size_of::<PEB>() {
+        if bytes_read < std::mem::size_of::<PEB>() 
+        {
             eprintln!("ReadProcessMemory({pid}, PEB) short read");
             let _ = CloseHandle(h_process);
             return None;
         }
 
-        if peb.ProcessParameters.is_null() {
+        if peb.ProcessParameters.is_null() 
+        {
             let _ = CloseHandle(h_process);
             return None;
         }
@@ -372,13 +378,15 @@ fn get_command_line(pid: u32) -> Option<String> {
             Some(&mut bytes_read2 as *mut usize),
         );
 
-        if let Err(e) = res {
+        if let Err(e) = res 
+        {
             eprintln!("ReadProcessMemory({pid}, ProcessParameters) failed: {e:?}");
             let _ = CloseHandle(h_process);
             return None;
         }
 
-        if bytes_read2 < std::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>() {
+        if bytes_read2 < std::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>() 
+        {
             eprintln!("ReadProcessMemory({pid}, ProcessParameters) short read");
             let _ = CloseHandle(h_process);
             return None;
@@ -386,7 +394,8 @@ fn get_command_line(pid: u32) -> Option<String> {
 
         let cmd = params.CommandLine;
 
-        if cmd.Length == 0 || cmd.Buffer.is_null() {
+        if cmd.Length == 0 || cmd.Buffer.is_null() 
+        {
             let _ = CloseHandle(h_process);
             return None;
         }
@@ -406,12 +415,14 @@ fn get_command_line(pid: u32) -> Option<String> {
 
         let _ = CloseHandle(h_process);
 
-        if let Err(e) = res {
+        if let Err(e) = res 
+        {
             eprintln!("ReadProcessMemory({pid}, CommandLine.Buffer) failed: {e:?}");
             return None;
         }
 
-        if bytes_read3 < cmd.Length as usize {
+        if bytes_read3 < cmd.Length as usize 
+        {
             eprintln!("ReadProcessMemory({pid}, CommandLine.Buffer) short read");
             return None;
         }
@@ -423,11 +434,14 @@ fn get_command_line(pid: u32) -> Option<String> {
 
 
 #[cfg(target_os = "windows")]
-fn get_cpu_percentage(pid: u32) -> Option<f32> {
-    unsafe {
+fn get_cpu_percentage(pid: u32) -> Option<f32> 
+{
+    unsafe 
+    {
         // open the process so we can query times
         let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
-        let h_process = match OpenProcess(access, false, pid) {
+        let h_process = match OpenProcess(access, false, pid) 
+        {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("OpenProcess({pid}) for CPU% failed: {e:?}");
@@ -476,9 +490,12 @@ fn get_cpu_percentage(pid: u32) -> Option<f32> {
         // Number of logical processors
         let mut sys_info = SYSTEM_INFO::default();
         GetSystemInfo(&mut sys_info);
-        let num_procs = if sys_info.dwNumberOfProcessors == 0 {
+        let num_procs = if sys_info.dwNumberOfProcessors == 0 
+        {
             1.0
-        } else {
+        } 
+        else 
+        {
             sys_info.dwNumberOfProcessors as f64
         };
 
@@ -497,7 +514,8 @@ fn get_cpu_percentage(pid: u32) -> Option<f32> {
 
 
 #[cfg(target_os = "windows")]
-fn filetime_to_u64(ft: FILETIME) -> u64 {
+fn filetime_to_u64(ft: FILETIME) -> u64 
+{
     // FILETIME is number of 100-ns intervals since 1601-01-01
     ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64 & 0xFFFF_FFFF)
 }
@@ -637,7 +655,8 @@ fn get_signer_name(pid: u32) -> Option<String>
         .chain(std::iter::once(0))
         .collect();
 
-    unsafe {
+    unsafe 
+    {
         //use CryptoAPI to parse the file and give us a cert store
 
         use std::ffi::c_void;
@@ -658,21 +677,25 @@ fn get_signer_name(pid: u32) -> Option<String>
             None,              // ppvContext
         );
 
-        if let Err(e) = res {
+        if let Err(e) = res 
+        {
             eprintln!("CryptQueryObject({}) failed: {:?}", path, e);
-            if !cert_store.is_invalid() {
+            if !cert_store.is_invalid() 
+            {
                 let _ = CertCloseStore(Some(cert_store), 0);
             }
             return None;
         }
 
-        if cert_store.is_invalid() {
+        if cert_store.is_invalid() 
+        {
             return None;
         }
 
         //take the first certificate from the store
         let cert_context = CertEnumCertificatesInStore(cert_store, None);
-        if cert_context.is_null() {
+        if cert_context.is_null() 
+        {
             let _ = CertCloseStore(Some(cert_store), 0);
             return None;
         }
@@ -688,7 +711,8 @@ fn get_signer_name(pid: u32) -> Option<String>
             Some(&mut name_buf),
         );
 
-        if len <= 1 {
+        if len <= 1 
+        {
             let _ = CertCloseStore(Some(cert_store), 0);
             return None;
         }
@@ -726,7 +750,8 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
 {
     let mut results = Vec::new();
 
-    unsafe {
+    unsafe 
+    {
 
         let mut size: u32 = 0;
 
@@ -740,7 +765,8 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
             0,
         );
 
-        if size == 0 {
+        if size == 0 
+        {
             return results;
         }
 
@@ -755,7 +781,8 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
             0,
         );
 
-        if ret != 0 {
+        if ret != 0 
+        {
             // non-zero means some error (we can refine this later)
             return results;
         }
@@ -799,8 +826,10 @@ fn get_connections(pid: u32) -> Vec<ConnectionInfo>
 
 
 #[cfg(target_os = "windows")]
-fn integrity_rid_to_string(rid: u32) -> String {
-    let s = match rid {
+fn integrity_rid_to_string(rid: u32) -> String 
+{
+    let s = match rid 
+    {
         0x0000 => "Untrusted",
         0x1000 => "Low",
         0x2000 => "Medium",
@@ -819,27 +848,29 @@ fn get_integrity_level(pid: u32) -> Option<String>
     use std::ptr::null_mut;
     use std::ffi::c_void;
 
-    unsafe {
-        // 1) Open the process so we can query its token
+    unsafe 
+    {
+        // Open the process so we can query its token
         let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
         let h_process = match OpenProcess(access, false, pid) {
             Ok(h) => h,
-            Err(e) => {
+            Err(e) => 
+            {
                 eprintln!("OpenProcess({pid}) for integrity level failed: {e:?}");
                 return None;
             }
         };
 
-        // 2) Open the process token
+        //Open the process token
         let mut token_handle = HANDLE(null_mut());
-        // Depending on your windows crate version, this may return BOOL or Result<()>
-        if let Err(e) = OpenProcessToken(h_process, TOKEN_QUERY, &mut token_handle) {
+        if let Err(e) = OpenProcessToken(h_process, TOKEN_QUERY, &mut token_handle) 
+        {
             eprintln!("OpenProcessToken({pid}) failed: {e:?}");
             let _ = CloseHandle(h_process);
             return None;
         }
 
-        // 3) First call to get required buffer size
+        //First call to get required buffer size
         let mut length: u32 = 0;
         let _ = GetTokenInformation(
             token_handle,
@@ -849,13 +880,14 @@ fn get_integrity_level(pid: u32) -> Option<String>
             &mut length,
         );
         
-        if length == 0 {
+        if length == 0 
+        {
             let _ = CloseHandle(token_handle);
             let _ = CloseHandle(h_process);
             return None;
         }
 
-        // 4) Allocate buffer and get the TOKEN_MANDATORY_LABEL
+        //Allocate buffer and get the TOKEN_MANDATORY_LABEL
         let mut buf = vec![0u8; length as usize];
 
         let res = GetTokenInformation(
@@ -866,7 +898,8 @@ fn get_integrity_level(pid: u32) -> Option<String>
             &mut length,
         );
 
-        if let Err(e) = res {
+        if let Err(e) = res 
+        {
             eprintln!("GetTokenInformation(TokenIntegrityLevel) failed: {e:?}");
             let _ = CloseHandle(token_handle);
             let _ = CloseHandle(h_process);
@@ -877,7 +910,8 @@ fn get_integrity_level(pid: u32) -> Option<String>
         let tml = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
         let sid = tml.Label.Sid;
 
-        if sid.0.is_null() {
+        if sid.0.is_null() 
+        {
             let _ = CloseHandle(token_handle);
             let _ = CloseHandle(h_process);
             return None;
@@ -885,21 +919,24 @@ fn get_integrity_level(pid: u32) -> Option<String>
 
         // pull the last SubAuthority from the SID – that's the integrity RID
         let sub_auth_count_ptr = GetSidSubAuthorityCount(sid);
-        if sub_auth_count_ptr.is_null() {
+        if sub_auth_count_ptr.is_null() 
+        {
             let _ = CloseHandle(token_handle);
             let _ = CloseHandle(h_process);
             return None;
         }
 
         let sub_auth_count = *sub_auth_count_ptr as u32;
-        if sub_auth_count == 0 {
+        if sub_auth_count == 0 
+        {
             let _ = CloseHandle(token_handle);
             let _ = CloseHandle(h_process);
             return None;
         }
 
         let rid_ptr = GetSidSubAuthority(sid, sub_auth_count - 1);
-        if rid_ptr.is_null() {
+        if rid_ptr.is_null() 
+        {
             let _ = CloseHandle(token_handle);
             let _ = CloseHandle(h_process);
             return None;
@@ -918,13 +955,16 @@ fn get_integrity_level(pid: u32) -> Option<String>
 
 
 
-fn get_modules(pid: u32) -> Vec<String> {
+fn get_modules(pid: u32) -> Vec<String> 
+{
     let mut modules = Vec::new();
 
-    unsafe {
+    unsafe 
+    {
         // Open the target process
         let access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
-        let h_process = match OpenProcess(access, false, pid) {
+        let h_process = match OpenProcess(access, false, pid) 
+        {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("OpenProcess({pid}) for modules failed: {e:?}");
@@ -946,14 +986,16 @@ fn get_modules(pid: u32) -> Vec<String> {
             &mut needed_bytes,   // how many bytes were actually needed
         );
 
-        if !ok.as_bool() {
+        if !ok.as_bool() 
+        {
             eprintln!("K32EnumProcessModules({pid}) failed");
             let _ = CloseHandle(h_process);
             return modules;
         }
 
-        // How many modules did we get?
-        if needed_bytes == 0 {
+        // How many modules did we get
+        if needed_bytes == 0 
+        {
             let _ = CloseHandle(h_process);
             return modules;
         }
@@ -961,7 +1003,8 @@ fn get_modules(pid: u32) -> Vec<String> {
         let module_size = std::mem::size_of::<HMODULE>() as u32;
         let mut count = (needed_bytes / module_size) as usize;
 
-        if count > hmods.len() {
+        if count > hmods.len() 
+        {
             count = hmods.len();
         }
 
@@ -976,7 +1019,8 @@ fn get_modules(pid: u32) -> Vec<String> {
                 &mut buf,
             ) as usize;
 
-            if len == 0 {
+            if len == 0 
+            {
                 continue;
             }
 
